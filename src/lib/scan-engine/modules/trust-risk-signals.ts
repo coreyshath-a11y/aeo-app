@@ -91,8 +91,9 @@ export async function scoreTrustRisk(
   }
 
   // Check 3: CrUX LCP (3 pts)
-  if (cruxData.hasData && cruxData.lcp) {
+  if (cruxData.hasData && cruxData.lcp && typeof cruxData.lcp.p75 === 'number' && isFinite(cruxData.lcp.p75)) {
     const lcpMs = cruxData.lcp.p75;
+    const lcpSec = (lcpMs / 1000).toFixed(1);
     let lcpScore = 0;
     if (lcpMs <= 2500) lcpScore = 3;
     else if (lcpMs <= 4000) lcpScore = 1;
@@ -103,14 +104,14 @@ export async function scoreTrustRisk(
       passed: lcpScore >= 2,
       score: lcpScore,
       maxScore: 3,
-      details: `Largest Contentful Paint: ${(lcpMs / 1000).toFixed(1)}s (${lcpScore === 3 ? 'Good' : lcpScore === 1 ? 'Needs Improvement' : 'Poor'})`,
+      details: `Largest Contentful Paint: ${lcpSec}s (${lcpScore === 3 ? 'Good' : lcpScore === 1 ? 'Needs Improvement' : 'Poor'})`,
     });
     if (lcpScore < 3) {
       recommendations.push({
         id: 'improve_lcp',
         title: 'Speed Up Your Page Load Time',
         description:
-          `Your page takes ${(lcpMs / 1000).toFixed(1)} seconds to show its main content. Fast-loading sites are trusted more by AI and preferred in search results.`,
+          `Your page takes ${lcpSec} seconds to show its main content. Fast-loading sites are trusted more by AI and preferred in search results.`,
         impact: 'high',
         difficulty: 'hard',
         pillar: 'trust_risk',
@@ -132,7 +133,7 @@ export async function scoreTrustRisk(
   }
 
   // Check 4: CrUX CLS (2 pts)
-  if (cruxData.hasData && cruxData.cls) {
+  if (cruxData.hasData && cruxData.cls && typeof cruxData.cls.p75 === 'number' && isFinite(cruxData.cls.p75)) {
     const clsValue = cruxData.cls.p75;
     let clsScore = 0;
     if (clsValue <= 0.1) clsScore = 2;
@@ -172,7 +173,7 @@ export async function scoreTrustRisk(
   }
 
   // Check 5: CrUX INP (2 pts)
-  if (cruxData.hasData && cruxData.inp) {
+  if (cruxData.hasData && cruxData.inp && typeof cruxData.inp.p75 === 'number' && isFinite(cruxData.inp.p75)) {
     const inpMs = cruxData.inp.p75;
     let inpScore = 0;
     if (inpMs <= 200) inpScore = 2;

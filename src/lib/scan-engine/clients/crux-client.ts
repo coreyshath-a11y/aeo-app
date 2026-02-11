@@ -107,14 +107,14 @@ function parseMetric(
     | Array<{ start: number; end?: number; density: number }>
     | undefined;
 
-  if (!percentiles?.p75 === undefined) return null;
+  if (percentiles?.p75 == null || typeof percentiles.p75 !== 'number' || !isFinite(percentiles.p75)) return null;
 
   const good = histogram?.[0]?.density ?? 0;
   const needsImprovement = histogram?.[1]?.density ?? 0;
   const poor = histogram?.[2]?.density ?? 0;
 
   return {
-    p75: percentiles?.p75 ?? 0,
+    p75: percentiles.p75,
     good: Math.round(good * 100),
     needsImprovement: Math.round(needsImprovement * 100),
     poor: Math.round(poor * 100),
