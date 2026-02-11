@@ -4,7 +4,11 @@ import { nanoid } from 'nanoid';
 import { urlSchema, normalizeUrl } from '@/lib/utils/url';
 import { checkRateLimit } from '@/lib/utils/rate-limiter';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { createClient } from '@/lib/supabase/server';
 import { runScan } from '@/lib/scan-engine';
+
+// Allow up to 60 seconds for Vercel serverless execution
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   try {
@@ -22,27 +26,51 @@ export async function POST(request: Request) {
     const url = parseResult.data;
     const normalizedUrl = normalizeUrl(url);
 
-    // 2. Rate limiting
+    // 2. Get IP address
     const ip =
       request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
       request.headers.get('x-real-ip') ||
       'unknown';
 
-    const maxPerHour = parseInt(
-      process.env.RATE_LIMIT_ANON_PER_HOUR || '3',
-      10
-    );
-    const rateCheck = checkRateLimit(
-      `scan:${ip}`,
-      maxPerHour,
-      60 * 60 * 1000
-    );
+    // 3. Check auth state
+    let userId: string | null = null;
+    let tier: 'anonymous' | 'free' | 'monitor' | 'diy' | 'pro' = 'anonymous';
+
+    try {
+      const supabaseAuth = await createClient();
+      const {
+        data: { user },
+      } = await supabaseAuth.auth.getUser();
+
+      if (user) {
+        userId = user.id;
+
+        // Get user tier from profiles
+        const admin = createAdminClient();
+        const { data: profile } = await admin
+          .from('profiles')
+          .select('tier')
+          .eq('id', user.id)
+          .single();
+
+        tier = (profile?.tier as typeof tier) || 'free';
+      }
+    } catch {
+      // Auth check failed — treat as anonymous
+    }
+
+    // 4. Rate limiting (Supabase-backed)
+    const rateCheck = await checkRateLimit(ip, userId, tier);
 
     if (!rateCheck.allowed) {
+      const message =
+        tier === 'anonymous'
+          ? "You've reached the free scan limit. Create a free account to get more scans — it only takes 30 seconds."
+          : "You've reached your daily scan limit. Upgrade your plan for more scans.";
+
       return NextResponse.json(
         {
-          error:
-            'You\'ve reached the scan limit. Try again in a bit, or create a free account for more scans.',
+          error: message,
           resetAt: rateCheck.resetAt,
         },
         { status: 429 }
@@ -51,7 +79,7 @@ export async function POST(request: Request) {
 
     const supabase = createAdminClient();
 
-    // 3. Check cache
+    // 5. Check cache
     const { data: cached } = await supabase
       .from('scan_cache')
       .select('scan_id, expires_at')
@@ -65,7 +93,7 @@ export async function POST(request: Request) {
       });
     }
 
-    // 4. Create scan record
+    // 6. Create scan record
     const scanId = `sc_${nanoid(16)}`;
     const { error: insertError } = await supabase.from('scans').insert({
       id: scanId,
@@ -73,6 +101,7 @@ export async function POST(request: Request) {
       normalized_url: normalizedUrl,
       status: 'pending',
       ip_address: ip,
+      user_id: userId,
     });
 
     if (insertError) {
@@ -83,7 +112,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // 5. Run scan in background
+    // 7. Run scan in background
     after(async () => {
       try {
         await runScan(scanId, url);
@@ -93,7 +122,7 @@ export async function POST(request: Request) {
       }
     });
 
-    // 6. Return immediately
+    // 8. Return immediately
     return NextResponse.json({ scanId, cached: false });
   } catch (error) {
     console.error('Scan API error:', error);

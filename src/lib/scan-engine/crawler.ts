@@ -1,9 +1,30 @@
 import * as tls from 'tls';
 import type { CrawlResult, TLSInfo } from '@/types/scan';
 
-const CRAWL_TIMEOUT_MS = 10_000;
+const CRAWL_TIMEOUT_MS = 15_000;
 const MAX_HTML_SIZE = 5 * 1024 * 1024; // 5MB
-const USER_AGENT = 'AIRI-Scanner/1.0 (AI Visibility Check)';
+const TLS_TIMEOUT_MS = 3_000;
+
+// Realistic Chrome UA — prevents WAF/bot detection blocking
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+const BROWSER_HEADERS: Record<string, string> = {
+  'User-Agent': USER_AGENT,
+  Accept:
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Sec-Fetch-Site': 'none',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-User': '?1',
+  'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"Windows"',
+  'Upgrade-Insecure-Requests': '1',
+  'Cache-Control': 'max-age=0',
+};
 
 export async function crawl(url: string): Promise<CrawlResult> {
   const startTime = Date.now();
@@ -11,8 +32,8 @@ export async function crawl(url: string): Promise<CrawlResult> {
   let currentUrl = url;
   let response: Response | null = null;
 
-  // Follow redirects manually to track the chain
-  for (let i = 0; i < 5; i++) {
+  // Follow redirects manually to track the chain (up to 8 hops)
+  for (let i = 0; i < 8; i++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), CRAWL_TIMEOUT_MS);
 
@@ -20,11 +41,7 @@ export async function crawl(url: string): Promise<CrawlResult> {
       response = await fetch(currentUrl, {
         signal: controller.signal,
         redirect: 'manual',
-        headers: {
-          'User-Agent': USER_AGENT,
-          Accept:
-            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
+        headers: BROWSER_HEADERS,
       });
     } finally {
       clearTimeout(timeout);
@@ -58,15 +75,20 @@ export async function crawl(url: string): Promise<CrawlResult> {
     html = html.slice(0, MAX_HTML_SIZE);
   }
 
-  // Get TLS info for HTTPS URLs
+  // Get TLS info for HTTPS URLs (non-critical — 3s hard timeout)
   let tlsInfo: TLSInfo | null = null;
   try {
     const parsed = new URL(currentUrl);
     if (parsed.protocol === 'https:') {
-      tlsInfo = await checkTLS(parsed.hostname);
+      tlsInfo = await Promise.race([
+        checkTLS(parsed.hostname),
+        new Promise<null>((resolve) =>
+          setTimeout(() => resolve(null), TLS_TIMEOUT_MS)
+        ),
+      ]);
     }
   } catch {
-    // TLS check failed — non-critical
+    // TLS check failed — non-critical, continue with null
   }
 
   return {
@@ -87,35 +109,35 @@ function checkTLS(hostname: string): Promise<TLSInfo> {
         host: hostname,
         port: 443,
         servername: hostname,
-        timeout: 5000,
       },
       () => {
-        const cert = socket.getPeerCertificate();
-        if (!cert || !cert.subject) {
+        try {
+          const cert = socket.getPeerCertificate();
+          if (!cert || !cert.subject) {
+            socket.destroy();
+            reject(new Error('No certificate found'));
+            return;
+          }
+
+          const result: TLSInfo = {
+            valid: socket.authorized ?? false,
+            issuer: cert.issuer?.O || cert.issuer?.CN || 'Unknown',
+            expiresAt: cert.valid_to || '',
+            protocol: socket.getProtocol() || 'unknown',
+          };
+
           socket.destroy();
-          reject(new Error('No certificate found'));
-          return;
+          resolve(result);
+        } catch (err) {
+          socket.destroy();
+          reject(err);
         }
-
-        resolve({
-          valid: socket.authorized ?? false,
-          issuer: cert.issuer?.O || cert.issuer?.CN || 'Unknown',
-          expiresAt: cert.valid_to || '',
-          protocol: socket.getProtocol() || 'unknown',
-        });
-
-        socket.destroy();
       }
     );
 
     socket.on('error', (err) => {
       socket.destroy();
       reject(err);
-    });
-
-    socket.setTimeout(5000, () => {
-      socket.destroy();
-      reject(new Error('TLS check timed out'));
     });
   });
 }
