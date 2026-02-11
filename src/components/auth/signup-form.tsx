@@ -1,12 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { OAuthButtons } from './oauth-buttons';
+import { Mail, RefreshCw } from 'lucide-react';
 
 export function SignupForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = searchParams.get('redirect') || '/dashboard';
 
@@ -18,6 +18,8 @@ export function SignupForm() {
   const [marketingConsent, setMarketingConsent] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [confirmationSent, setConfirmationSent] = useState(false);
+  const [resending, setResending] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -37,10 +39,11 @@ export function SignupForm() {
 
     try {
       const supabase = createClient();
-      const { error: signUpError } = await supabase.auth.signUp({
+      const { data, error: signUpError } = await supabase.auth.signUp({
         email,
         password,
         options: {
+          emailRedirectTo: `${window.location.origin}/auth/confirm?next=${encodeURIComponent(redirectTo)}`,
           data: {
             full_name: fullName,
             company_name: companyName,
@@ -55,8 +58,14 @@ export function SignupForm() {
         return;
       }
 
-      router.push(redirectTo);
-      router.refresh();
+      // If session exists, email confirmation is disabled — go straight to dashboard
+      if (data.session) {
+        window.location.href = redirectTo;
+        return;
+      }
+
+      // No session = email confirmation required — show the confirmation screen
+      setConfirmationSent(true);
     } catch {
       setError('Something went wrong. Please try again.');
     } finally {
@@ -64,6 +73,73 @@ export function SignupForm() {
     }
   }
 
+  async function handleResendConfirmation() {
+    setResending(true);
+    setError(null);
+
+    try {
+      const supabase = createClient();
+      const { error: resendError } = await supabase.auth.resend({
+        type: 'signup',
+        email,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/confirm?next=${encodeURIComponent(redirectTo)}`,
+        },
+      });
+
+      if (resendError) {
+        setError(resendError.message);
+      }
+    } catch {
+      setError('Failed to resend. Please try again.');
+    } finally {
+      setResending(false);
+    }
+  }
+
+  // ── Confirmation Screen ──────────────────────────────
+  if (confirmationSent) {
+    return (
+      <div className="w-full space-y-5 text-center">
+        <div className="flex justify-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
+            <Mail className="h-7 w-7 text-primary" />
+          </div>
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold">Check your email</h3>
+          <p className="mt-2 text-sm text-muted-foreground">
+            We sent a confirmation link to
+          </p>
+          <p className="mt-1 font-medium">{email}</p>
+          <p className="mt-3 text-sm text-muted-foreground">
+            Click the link in the email to activate your account and get your
+            full AI visibility report.
+          </p>
+        </div>
+
+        {error && (
+          <p className="text-sm text-destructive">{error}</p>
+        )}
+
+        <div className="space-y-3 pt-2">
+          <button
+            onClick={handleResendConfirmation}
+            disabled={resending}
+            className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2.5 text-sm font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${resending ? 'animate-spin' : ''}`} />
+            {resending ? 'Sending...' : "Didn't get it? Resend email"}
+          </button>
+          <p className="text-xs text-muted-foreground">
+            Check your spam folder too. The email comes from noreply@mail.app.supabase.io
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Signup Form ──────────────────────────────────────
   return (
     <div className="w-full space-y-5">
       {/* OAuth providers first — fastest path */}
